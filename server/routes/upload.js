@@ -40,16 +40,21 @@ const upload = multer({
 function cleanValue(raw) {
   if (raw === null || raw === undefined) return '';
   let v = String(raw).trim();
-  // Handle rate-style "4.1/5"
-  if (/^\d+(\.\d+)?\/\d+(\.\d+)?$/.test(v)) {
-    v = v.split('/')[0];
+  // Handle rate-style "4.1/5" or "3.8 /5"
+  const rateMatch = v.match(/^(\d+(?:\.\d+)?)\s*\/\s*\d+(?:\.\d+)?$/);
+  if (rateMatch) {
+    v = rateMatch[1];
+  }
+  // Strip commas in numbers like "1,200"
+  if (/^[\d,]+(\.\d+)?$/.test(v) && v.includes(',')) {
+    v = v.replace(/,/g, '');
   }
   return v;
 }
 
 /**
  * Detect whether a column is numeric or categorical by sampling values.
- * If >80 % of non-empty sampled values parse as finite numbers → numeric.
+ * If >=50 % of non-empty sampled values parse as finite numbers → numeric.
  */
 function detectColumnType(sampleValues) {
   const nonEmpty = sampleValues.filter((v) => v !== '' && v !== null && v !== undefined);
@@ -58,11 +63,11 @@ function detectColumnType(sampleValues) {
   let numericCount = 0;
   for (const v of nonEmpty) {
     const cleaned = cleanValue(v);
-    if (cleaned === '') continue;
+    if (cleaned === '' || cleaned === '-' || cleaned.toLowerCase() === 'new') continue;
     const n = parseFloat(cleaned);
     if (Number.isFinite(n)) numericCount++;
   }
-  return numericCount / nonEmpty.length > 0.8 ? 'numeric' : 'categorical';
+  return numericCount / nonEmpty.length >= 0.5 ? 'numeric' : 'categorical';
 }
 
 // ---------------------------------------------------------------------------
@@ -130,9 +135,12 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     return res.json({
       success: true,
       data: {
+        id: datasetId,
         datasetId,
+        dataset_id: datasetId,
         columns,
         rowCount: cleanedRows.length,
+        total_rows: cleanedRows.length,
         preview: cleanedRows.slice(0, 5),
       },
     });
@@ -150,12 +158,13 @@ router.get('/datasets', (_req, res) => {
   for (const [id, ds] of dataStore) {
     list.push({
       id,
+      dataset_id: id,
       filename: ds.filename,
       rowCount: ds.rows.length,
       uploadedAt: ds.uploadedAt,
     });
   }
-  res.json({ success: true, data: list });
+  res.json({ success: true, data: { datasets: list }, datasets: list });
 });
 
 // ---------------------------------------------------------------------------

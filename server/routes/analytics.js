@@ -12,17 +12,15 @@ import { dataStore } from '../store.js';
 const router = Router();
 
 // ---------------------------------------------------------------------------
-// Middleware — resolve dataset and attach to req
+// Parameter middleware — resolve dataset and attach to req
 // ---------------------------------------------------------------------------
-function resolveDataset(req, res, next) {
-  const ds = dataStore.get(req.params.datasetId);
+router.param('datasetId', (req, res, next, datasetId) => {
+  const ds = dataStore.get(datasetId);
   if (!ds) return res.status(404).json({ success: false, error: 'Dataset not found' });
   if (ds.rows.length === 0) return res.status(400).json({ success: false, error: 'Dataset is empty' });
   req.dataset = ds;
   next();
-}
-
-router.use('/:datasetId', resolveDataset);
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,7 +80,21 @@ router.get('/:datasetId/summary', (req, res) => {
       }
     }
 
-    res.json({ success: true, data: summary });
+    res.json({
+      success: true,
+      data: {
+        total_rows: rows.length,
+        columns: columns.map((c) => c.name),
+        column_meta: columns,
+        summary,
+        numeric_summary: Object.fromEntries(
+          columns.filter((c) => c.type === 'numeric').map((c) => [c.name, summary[c.name]])
+        ),
+        categorical_summary: Object.fromEntries(
+          columns.filter((c) => c.type === 'categorical').map((c) => [c.name, summary[c.name]])
+        ),
+      },
+    });
   } catch (err) {
     console.error('Summary error:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -307,6 +319,152 @@ router.get('/:datasetId/compare/:col1/:col2', (req, res) => {
     res.json({ success: true, data });
   } catch (err) {
     console.error('Compare error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /:datasetId/zomato-insights — 6 core business questions answered
+// ---------------------------------------------------------------------------
+router.get('/:datasetId/zomato-insights', (req, res) => {
+  try {
+    const { columns, rows } = req.dataset;
+    const findCol = (keywords) => {
+      const match = columns.find((c) =>
+        keywords.some((k) => c.name.toLowerCase().includes(k.toLowerCase()))
+      );
+      return match ? match.name : null;
+    };
+
+    const typeCol = findCol(['listed_in(type)', 'listed_in', 'rest_type', 'type']);
+    const onlineCol = findCol(['online_order', 'online']);
+    const rateCol = findCol(['rate', 'rating']);
+    const votesCol = findCol(['votes', 'vote']);
+    const costCol = findCol(['approx_cost', 'cost']);
+
+    const insights = {};
+
+    // Q1: What type of restaurant do the majority of customers order from?
+    if (typeCol) {
+      const counts = {};
+      for (const r of rows) {
+        const t = r[typeCol] || 'Other';
+        counts[t] = (counts[t] || 0) + 1;
+      }
+      const sortedTypes = Object.entries(counts)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+      insights.q1 = {
+        question: 'What type of restaurant do the majority of customers order from?',
+        majorityType: sortedTypes[0]?.name || 'N/A',
+        majorityCount: sortedTypes[0]?.count || 0,
+        data: sortedTypes,
+      };
+    }
+
+    // Q2: How many votes has each type of restaurant received from customers?
+    if (typeCol && votesCol) {
+      const votesByType = {};
+      for (const r of rows) {
+        const t = r[typeCol] || 'Other';
+        const v = Number(r[votesCol]) || 0;
+        votesByType[t] = (votesByType[t] || 0) + v;
+      }
+      const sortedVotes = Object.entries(votesByType)
+        .map(([name, totalVotes]) => ({ name, totalVotes }))
+        .sort((a, b) => b.totalVotes - a.totalVotes);
+      insights.q2 = {
+        question: 'How many votes has each type of restaurant received from customers?',
+        data: sortedVotes,
+      };
+    }
+
+    // Q3: What are the ratings that the majority of restaurants have received?
+    if (rateCol) {
+      const rateCounts = {};
+      const validRates = [];
+      for (const r of rows) {
+        const val = r[rateCol];
+        if (val !== null && Number.isFinite(val)) {
+          const rounded = val.toFixed(1);
+          rateCounts[rounded] = (rateCounts[rounded] || 0) + 1;
+          validRates.push(val);
+        }
+      }
+      const sortedRatings = Object.entries(rateCounts)
+        .map(([rating, count]) => ({ rating, count }))
+        .sort((a, b) => b.count - a.count);
+      insights.q3 = {
+        question: 'What are the ratings that the majority of restaurants have received?',
+        majorityRating: sortedRatings[0]?.rating || 'N/A',
+        majorityCount: sortedRatings[0]?.count || 0,
+        averageRating: validRates.length ? Number(mean(validRates).toFixed(2)) : null,
+        data: sortedRatings.sort((a, b) => parseFloat(a.rating) - parseFloat(b.rating)),
+      };
+    }
+
+    // Q4: Average spending for online orders (couples / 2 people)
+    if (onlineCol && costCol) {
+      const onlineCosts = rows
+        .filter((r) => String(r[onlineCol]).toLowerCase() === 'yes')
+        .map((r) => r[costCol])
+        .filter((c) => c !== null && Number.isFinite(c));
+      const avgOnlineCost = onlineCosts.length ? Number(mean(onlineCosts).toFixed(2)) : null;
+      insights.q4 = {
+        question: 'What is the average spending on each order for couples ordering online?',
+        averageSpending: avgOnlineCost,
+        currency: '₹',
+        sampleSize: onlineCosts.length,
+      };
+    }
+
+    // Q5: Which mode (online or offline) has received maximum rating?
+    if (onlineCol && rateCol) {
+      const onlineRates = rows
+        .filter((r) => String(r[onlineCol]).toLowerCase() === 'yes')
+        .map((r) => r[rateCol])
+        .filter((v) => v !== null && Number.isFinite(v));
+      const offlineRates = rows
+        .filter((r) => String(r[onlineCol]).toLowerCase() === 'no')
+        .map((r) => r[rateCol])
+        .filter((v) => v !== null && Number.isFinite(v));
+
+      const avgOnline = onlineRates.length ? Number(mean(onlineRates).toFixed(2)) : 0;
+      const avgOffline = offlineRates.length ? Number(mean(offlineRates).toFixed(2)) : 0;
+      const maxOnline = onlineRates.length ? max(onlineRates) : 0;
+      const maxOffline = offlineRates.length ? max(offlineRates) : 0;
+
+      insights.q5 = {
+        question: 'Which mode (online or offline) has received the maximum rating?',
+        winner: avgOnline >= avgOffline ? 'Online' : 'Offline',
+        online: { average: avgOnline, max: maxOnline, count: onlineRates.length },
+        offline: { average: avgOffline, max: maxOffline, count: offlineRates.length },
+      };
+    }
+
+    // Q6: Which type of restaurant received more offline orders?
+    if (typeCol && onlineCol) {
+      const offlineByType = {};
+      for (const r of rows) {
+        if (String(r[onlineCol]).toLowerCase() === 'no') {
+          const t = r[typeCol] || 'Other';
+          offlineByType[t] = (offlineByType[t] || 0) + 1;
+        }
+      }
+      const sortedOffline = Object.entries(offlineByType)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+      insights.q6 = {
+        question: 'Which type of restaurant received more offline orders (for offering discounts)?',
+        targetType: sortedOffline[0]?.name || 'N/A',
+        count: sortedOffline[0]?.count || 0,
+        data: sortedOffline,
+      };
+    }
+
+    res.json({ success: true, data: insights });
+  } catch (err) {
+    console.error('Zomato insights error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });

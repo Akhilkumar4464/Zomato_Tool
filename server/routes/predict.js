@@ -11,17 +11,15 @@ import { dataStore } from '../store.js';
 const router = Router();
 
 // ---------------------------------------------------------------------------
-// Middleware — resolve dataset
+// Parameter middleware — resolve dataset
 // ---------------------------------------------------------------------------
-function resolveDataset(req, res, next) {
-  const ds = dataStore.get(req.params.datasetId);
+router.param('datasetId', (req, res, next, datasetId) => {
+  const ds = dataStore.get(datasetId);
   if (!ds) return res.status(404).json({ success: false, error: 'Dataset not found' });
   if (ds.rows.length === 0) return res.status(400).json({ success: false, error: 'Dataset is empty' });
   req.dataset = ds;
   next();
-}
-
-router.use('/:datasetId', resolveDataset);
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

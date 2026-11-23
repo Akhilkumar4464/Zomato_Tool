@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import ChartCard from '../components/ChartCard'
 import StatsCard from '../components/StatsCard'
-import { getSummary, getDistribution, getCorrelation, getGrouped, getCompare } from '../api'
+import { getSummary, getDistribution, getCorrelation, getGrouped, getCompare, getZomatoInsights } from '../api'
 
 /** Colour palette used across all charts */
 const COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
@@ -39,17 +39,19 @@ export default function DashboardPage() {
 
   // Zomato-specific detections
   const [zomatoCharts, setZomatoCharts] = useState([])
+  const [zomatoInsights, setZomatoInsights] = useState(null)
 
   // ---- data loading ----
   const load = async () => {
     try {
       setLoading(true)
-      const { data } = await getSummary(datasetId)
+      const res = await getSummary(datasetId)
+      const data = res.data?.data || res.data || {}
       setSummary(data)
 
-      const cols = data.columns || []
       const numStats = data.numeric_summary || data.numeric || {}
       const catStats = data.categorical_summary || data.categorical || {}
+      const cols = data.columns || [...Object.keys(numStats), ...Object.keys(catStats)]
 
       const nCols = Object.keys(numStats)
       const cCols = Object.keys(catStats)
@@ -57,11 +59,21 @@ export default function DashboardPage() {
       setCatCols(cCols)
       setSelectedCols([...nCols, ...cCols])
 
+      // Fetch Zomato business insights (Answers to 6 Questions)
+      try {
+        const insightsRes = await getZomatoInsights(datasetId)
+        if (insightsRes.data?.data) {
+          setZomatoInsights(insightsRes.data.data)
+        }
+      } catch (err) {
+        console.warn('Zomato insights fetch error:', err)
+      }
+
       // Fetch distributions in parallel
       const distEntries = await Promise.allSettled(
         [...nCols.slice(0, 6), ...cCols.slice(0, 6)].map(async (col) => {
           const r = await getDistribution(datasetId, col)
-          return [col, r.data]
+          return [col, r.data?.data || r.data]
         }),
       )
       const dists = {}
@@ -72,7 +84,7 @@ export default function DashboardPage() {
       if (cCols.length && nCols.length) {
         try {
           const r = await getGrouped(datasetId, cCols[0], nCols[0])
-          setGroupedData({ cat: cCols[0], num: nCols[0], data: r.data.data || r.data })
+          setGroupedData({ cat: cCols[0], num: nCols[0], data: r.data?.data || r.data })
         } catch { /* skip */ }
       }
 
@@ -80,7 +92,7 @@ export default function DashboardPage() {
       if (nCols.length >= 2) {
         try {
           const r = await getCompare(datasetId, nCols[0], nCols[1])
-          setCompareData({ x: nCols[0], y: nCols[1], data: r.data.data || r.data })
+          setCompareData({ x: nCols[0], y: nCols[1], data: r.data?.data || r.data })
         } catch { /* skip */ }
       }
 
@@ -88,13 +100,12 @@ export default function DashboardPage() {
       if (nCols.length >= 2) {
         try {
           const r = await getCorrelation(datasetId)
-          setCorrelationData(r.data)
+          setCorrelationData(r.data?.data || r.data)
         } catch { /* skip */ }
       }
 
       // Zomato-specific detections
       const zCharts = []
-      const colsLower = cols.map((c) => c.toLowerCase())
       const findCol = (keywords) => cols.find((c) => keywords.some((k) => c.toLowerCase().includes(k)))
 
       const typeCol = findCol(['listed_in(type)', 'listed_in', 'rest_type', 'restaurant type'])
@@ -106,31 +117,31 @@ export default function DashboardPage() {
       if (typeCol) {
         try {
           const r = await getDistribution(datasetId, typeCol)
-          zCharts.push({ id: 'type', title: 'Orders by Restaurant Type', col: typeCol, data: r.data, type: 'bar' })
+          zCharts.push({ id: 'type', title: 'Orders by Restaurant Type', col: typeCol, data: r.data?.data || r.data, type: 'bar' })
         } catch { /* skip */ }
       }
       if (votesCol && typeCol) {
         try {
           const r = await getGrouped(datasetId, typeCol, votesCol, 'sum')
-          zCharts.push({ id: 'votes', title: 'Total Votes by Type', col: votesCol, data: r.data.data || r.data, type: 'bar' })
+          zCharts.push({ id: 'votes', title: 'Total Votes by Type', col: votesCol, data: r.data?.data || r.data, type: 'bar' })
         } catch { /* skip */ }
       }
       if (rateCol) {
         try {
           const r = await getDistribution(datasetId, rateCol)
-          zCharts.push({ id: 'rate', title: 'Rating Distribution', col: rateCol, data: r.data, type: 'area' })
+          zCharts.push({ id: 'rate', title: 'Rating Distribution', col: rateCol, data: r.data?.data || r.data, type: 'area' })
         } catch { /* skip */ }
       }
       if (costCol) {
         try {
           const r = await getDistribution(datasetId, costCol)
-          zCharts.push({ id: 'cost', title: 'Spending Analysis', col: costCol, data: r.data, type: 'bar' })
+          zCharts.push({ id: 'cost', title: 'Spending Analysis', col: costCol, data: r.data?.data || r.data, type: 'bar' })
         } catch { /* skip */ }
       }
       if (onlineCol) {
         try {
           const r = await getDistribution(datasetId, onlineCol)
-          zCharts.push({ id: 'online', title: 'Online vs Offline Orders', col: onlineCol, data: r.data, type: 'pie' })
+          zCharts.push({ id: 'online', title: 'Online vs Offline Orders', col: onlineCol, data: r.data?.data || r.data, type: 'pie' })
         } catch { /* skip */ }
       }
       setZomatoCharts(zCharts)
@@ -154,14 +165,27 @@ export default function DashboardPage() {
 
   const normalizeDistData = (raw) => {
     if (!raw) return []
-    if (Array.isArray(raw)) return raw.map((item) => {
-      if (typeof item === 'object') return item
-      return { name: String(item), value: 1 }
-    })
-    if (raw.labels && raw.values) return raw.labels.map((l, i) => ({ name: String(l), value: raw.values[i] }))
-    if (raw.bins && raw.counts) return raw.bins.map((b, i) => ({ name: String(b), value: raw.counts[i] }))
     if (raw.data) return normalizeDistData(raw.data)
-    return Object.entries(raw).map(([k, v]) => ({ name: k, value: v }))
+    if (raw.bins && Array.isArray(raw.bins)) {
+      return raw.bins.map((b) => ({ name: String(b.bin), value: Number(b.count) }))
+    }
+    if (raw.distribution && Array.isArray(raw.distribution)) {
+      return raw.distribution.map((d) => ({ name: String(d.value), value: Number(d.count) }))
+    }
+    if (Array.isArray(raw)) {
+      return raw.map((item) => {
+        if (typeof item === 'object' && item !== null) {
+          const name = item.name ?? item.group ?? item.bin ?? item.rating ?? item.value ?? Object.values(item)[0]
+          const value = item.value ?? item.count ?? item.totalVotes ?? Object.values(item)[1] ?? 0
+          return { name: String(name), value: Number(value) }
+        }
+        return { name: String(item), value: 1 }
+      })
+    }
+    return Object.entries(raw).map(([k, v]) => ({
+      name: String(k),
+      value: typeof v === 'object' && v !== null ? Number(v.count || v.value || 0) : Number(v) || 0,
+    }))
   }
 
   // ---- loading state ----
@@ -388,6 +412,113 @@ export default function DashboardPage() {
           )
         })()}
       </div>
+
+      {/* ── Zomato Core Business Questions (Answers to the 6 EDA Questions) ── */}
+      {zomatoInsights && (
+        <div className="space-y-6 pt-4 border-t border-gray-200">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="inline-block px-3 py-1 bg-red-100 text-red-700 text-xs font-semibold rounded-full uppercase tracking-wider mb-1">
+                Zomato Business Intelligence
+              </span>
+              <h3 className="text-xl font-bold text-gray-800">
+                🎯 Core EDA & Strategic Business Answers
+              </h3>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Q1 Card */}
+            {zomatoInsights.q1 && (
+              <div className="bg-white p-5 rounded-xl border border-red-100 shadow-sm flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-red-500 uppercase">Q1: Majority Restaurant Type</span>
+                  <h4 className="text-sm text-gray-600 mt-1">What type of restaurant do majority order from?</h4>
+                  <div className="mt-3 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-gray-900">{zomatoInsights.q1.majorityType}</span>
+                    <span className="text-xs font-medium text-gray-500">({zomatoInsights.q1.majorityCount} restaurants)</span>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-400 mt-3 pt-2 border-t border-gray-100">
+                  Target popular categories for featured banner placements.
+                </p>
+              </div>
+            )}
+
+            {/* Q3 Card */}
+            {zomatoInsights.q3 && (
+              <div className="bg-white p-5 rounded-xl border border-red-100 shadow-sm flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-red-500 uppercase">Q3: Most Common Rating</span>
+                  <h4 className="text-sm text-gray-600 mt-1">Ratings majority of restaurants received</h4>
+                  <div className="mt-3 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-gray-900">⭐ {zomatoInsights.q3.majorityRating}</span>
+                    <span className="text-xs font-medium text-gray-500">(Avg: {zomatoInsights.q3.averageRating || '—'})</span>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-400 mt-3 pt-2 border-t border-gray-100">
+                  Majority restaurants cluster around {zomatoInsights.q3.majorityRating} / 5.0.
+                </p>
+              </div>
+            )}
+
+            {/* Q4 Card */}
+            {zomatoInsights.q4 && (
+              <div className="bg-white p-5 rounded-xl border border-red-100 shadow-sm flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-red-500 uppercase">Q4: Online Couple Spending</span>
+                  <h4 className="text-sm text-gray-600 mt-1">Average spending on online orders for two</h4>
+                  <div className="mt-3 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-gray-900">
+                      ₹{zomatoInsights.q4.averageSpending != null ? zomatoInsights.q4.averageSpending : '—'}
+                    </span>
+                    <span className="text-xs font-medium text-gray-500">per order</span>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-400 mt-3 pt-2 border-t border-gray-100">
+                  Couples spend avg ₹{zomatoInsights.q4.averageSpending} when ordering online.
+                </p>
+              </div>
+            )}
+
+            {/* Q5 Card */}
+            {zomatoInsights.q5 && (
+              <div className="bg-white p-5 rounded-xl border border-red-100 shadow-sm flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-red-500 uppercase">Q5: Highest Rating Mode</span>
+                  <h4 className="text-sm text-gray-600 mt-1">Which mode received higher rating?</h4>
+                  <div className="mt-3 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-green-600">{zomatoInsights.q5.winner}</span>
+                    <span className="text-xs font-medium text-gray-500">
+                      (Online: {zomatoInsights.q5.online?.average} vs Offline: {zomatoInsights.q5.offline?.average})
+                    </span>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-400 mt-3 pt-2 border-t border-gray-100">
+                  {zomatoInsights.q5.winner} ordering experiences hold higher consumer satisfaction.
+                </p>
+              </div>
+            )}
+
+            {/* Q6 Card */}
+            {zomatoInsights.q6 && (
+              <div className="bg-white p-5 rounded-xl border border-red-100 shadow-sm flex flex-col justify-between">
+                <div>
+                  <span className="text-xs font-bold text-red-500 uppercase">Q6: Target for Discounts</span>
+                  <h4 className="text-sm text-gray-600 mt-1">Type with most offline orders to convert</h4>
+                  <div className="mt-3 flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-orange-600">{zomatoInsights.q6.targetType}</span>
+                    <span className="text-xs font-medium text-gray-500">({zomatoInsights.q6.count} offline outlets)</span>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-400 mt-3 pt-2 border-t border-gray-100">
+                  Target {zomatoInsights.q6.targetType} with onboarding discounts to convert offline demand!
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Zomato-specific Section ── */}
       {zomatoCharts.length > 0 && (

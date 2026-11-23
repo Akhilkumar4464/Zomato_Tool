@@ -4,16 +4,14 @@ import { dataStore } from '../store.js';
 const router = Router();
 
 // ---------------------------------------------------------------------------
-// Middleware — resolve dataset
+// Parameter middleware — resolve dataset
 // ---------------------------------------------------------------------------
-function resolveDataset(req, res, next) {
-  const ds = dataStore.get(req.params.datasetId);
+router.param('datasetId', (req, res, next, datasetId) => {
+  const ds = dataStore.get(datasetId);
   if (!ds) return res.status(404).json({ success: false, error: 'Dataset not found' });
   req.dataset = ds;
   next();
-}
-
-router.use('/:datasetId', resolveDataset);
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,7 +60,11 @@ router.post('/:datasetId/rows', (req, res) => {
     }
 
     // Build a new row with an _id, coercing types as needed
-    const newRow = { _id: rows.length > 0 ? Math.max(...rows.map((r) => r._id)) + 1 : 0 };
+    let maxId = 0;
+    for (const r of rows) {
+      if (typeof r._id === 'number' && r._id > maxId) maxId = r._id;
+    }
+    const newRow = { _id: maxId + 1 };
     for (const col of columns) {
       const raw = body[col.name];
       if (col.type === 'numeric') {

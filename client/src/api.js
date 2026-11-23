@@ -19,6 +19,7 @@ export const getGrouped = (id, groupBy, metric, agg = 'mean') =>
   api.get(`/analytics/${id}/group/${groupBy}/${metric}?agg=${agg}`)
 export const getTop = (id, col) => api.get(`/analytics/${id}/top/${col}`)
 export const getCompare = (id, col1, col2) => api.get(`/analytics/${id}/compare/${col1}/${col2}`)
+export const getZomatoInsights = (id) => api.get(`/analytics/${id}/zomato-insights`)
 
 export const predictLinear = (id, body) => api.post(`/predict/${id}/linear`, body)
 export const getTrends = (id, col) => api.get(`/predict/${id}/trends/${col}`)

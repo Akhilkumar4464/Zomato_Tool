@@ -33,8 +33,12 @@ export default function UploadPage({ onDatasetLoaded }) {
   const fetchDatasets = async () => {
     try {
       setLoadingDatasets(true)
-      const { data } = await getDatasets()
-      setDatasets(data.datasets || [])
+      const res = await getDatasets()
+      const payload = res.data?.data || res.data || {}
+      const list = Array.isArray(payload)
+        ? payload
+        : payload.datasets || res.data?.datasets || []
+      setDatasets(list)
     } catch {
       // silently ignore — may be first visit
       setDatasets([])
@@ -63,15 +67,20 @@ export default function UploadPage({ onDatasetLoaded }) {
           setUploadProgress((p) => (p < 90 ? p + 10 : p))
         }, 200)
 
-        const { data } = await uploadCSV(file)
+        const res = await uploadCSV(file)
         clearInterval(progressInterval)
         setUploadProgress(100)
 
         toast.success('Dataset uploaded successfully!')
-        const id = data.dataset_id || data.id
-        if (onDatasetLoaded) onDatasetLoaded(id, file.name)
+        const resData = res.data?.data || res.data || {}
+        const id = resData.datasetId || resData.dataset_id || resData.id || res.data?.datasetId
 
-        setTimeout(() => navigate(`/dashboard/${id}`), 400)
+        if (id) {
+          if (onDatasetLoaded) onDatasetLoaded(id, file.name)
+          setTimeout(() => navigate(`/dashboard/${id}`), 400)
+        } else {
+          toast.error('Upload succeeded but no dataset ID was returned.')
+        }
       } catch (err) {
         toast.error(err?.response?.data?.error || 'Upload failed')
       } finally {
