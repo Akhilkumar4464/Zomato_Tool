@@ -50,7 +50,8 @@ export default function PredictPage() {
     ;(async () => {
       try {
         setLoading(true)
-        const { data } = await getSummary(datasetId)
+        const res = await getSummary(datasetId)
+        const data = res.data?.data || res.data || {}
         const numStats = data.numeric_summary || data.numeric || {}
         const catStats = data.categorical_summary || data.categorical || {}
         const nCols = Object.keys(numStats)
@@ -87,8 +88,8 @@ export default function PredictPage() {
         features: lrFeatures,
         input: lrFeatures.reduce((acc, f) => ({ ...acc, [f]: Number(lrInputs[f]) || 0 }), {}),
       }
-      const { data } = await predictLinear(datasetId, body)
-      setLrResult(data)
+      const res = await predictLinear(datasetId, body)
+      setLrResult(res.data?.data || res.data)
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Prediction failed')
     } finally {
@@ -100,8 +101,8 @@ export default function PredictPage() {
     if (!trendCol) return
     try {
       setTrendLoading(true)
-      const { data } = await getTrends(datasetId, trendCol)
-      setTrendData(data)
+      const res = await getTrends(datasetId, trendCol)
+      setTrendData(res.data?.data || res.data)
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Trend analysis failed')
     } finally {
@@ -127,8 +128,8 @@ export default function PredictPage() {
         features: clsFeatures,
         input: clsFeatures.reduce((acc, f) => ({ ...acc, [f]: Number(clsInputs[f]) || 0 }), {}),
       }
-      const { data } = await classify(datasetId, body)
-      setClsResult(data)
+      const res = await classify(datasetId, body)
+      setClsResult(res.data?.data || res.data)
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Classification failed')
     } finally {

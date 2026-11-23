@@ -33,7 +33,8 @@ export default function AdminPage() {
   // ---- data loading ----
   const fetchMeta = async () => {
     try {
-      const { data } = await getSummary(datasetId)
+      const res = await getSummary(datasetId)
+      const data = res.data?.data || res.data || {}
       setColumns(data.columns || [])
     } catch { /* columns will be derived from rows */ }
   }
@@ -41,8 +42,9 @@ export default function AdminPage() {
   const fetchRows = async (p = page) => {
     try {
       setLoading(true)
-      const { data } = await getRows(datasetId, p, limit)
-      const r = data.rows || data.data || []
+      const res = await getRows(datasetId, p, limit)
+      const data = res.data?.data || res.data || {}
+      const r = data.rows || []
       setRows(r)
       setTotalRows(data.total ?? data.total_rows ?? r.length)
       if (!columns.length && r.length) setColumns(Object.keys(r[0]))
