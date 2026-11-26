@@ -70,17 +70,19 @@ router.post('/:datasetId/linear', (req, res) => {
 
       const prediction = predict(Number(input[feat]));
 
-      return res.json({
-        success: true,
-        data: {
-          prediction,
-          model: {
-            coefficients: { [feat]: model.m, intercept: model.b },
-            rSquared: r2,
-          },
-          featureImportance: [{ feature: feat, importance: 1 }],
+    return res.json({
+      success: true,
+      data: {
+        prediction: Number(prediction.toFixed(2)),
+        r2: Number(r2.toFixed(4)),
+        coefficients: { [feat]: Number(model.m.toFixed(4)), intercept: Number(model.b.toFixed(4)) },
+        model: {
+          coefficients: { [feat]: model.m, intercept: model.b },
+          rSquared: r2,
         },
-      });
+        featureImportance: [{ feature: feat, importance: 1 }],
+      },
+    });
     }
 
     // --- Multivariate: manual ordinary least squares via normal equation ---
@@ -179,7 +181,13 @@ router.post('/:datasetId/linear', (req, res) => {
 
     res.json({
       success: true,
-      data: { prediction, model: { coefficients, rSquared: r2 }, featureImportance },
+      data: {
+        prediction: Number(prediction.toFixed(2)),
+        r2: Number(r2.toFixed(4)),
+        coefficients,
+        model: { coefficients, rSquared: r2 },
+        featureImportance,
+      },
     });
   } catch (err) {
     console.error('Linear regression error:', err);
@@ -223,25 +231,71 @@ router.get('/:datasetId/trends/:column', (req, res) => {
     if (model.m > 0.01) trend = 'increasing';
     else if (model.m < -0.01) trend = 'decreasing';
 
-    // Forecast next 5 values
+    // Prepare combined time-series array for Recharts
+    const chartData = values.map((val, idx) => {
+      const ma = idx >= window - 1 ? mean(values.slice(idx - window + 1, idx + 1)) : null;
+      return {
+        idx: idx + 1,
+        label: `#${idx + 1}`,
+        value: val,
+        actual: val,
+        moving_avg: ma ? Number(ma.toFixed(2)) : null,
+        forecast: null,
+      };
+    });
+
+    // Append forecast projection points
+    const forecastCount = Math.min(10, Math.max(5, Math.round(values.length * 0.1)));
     const forecast = [];
-    for (let i = 1; i <= 5; i++) {
-      forecast.push({
-        index: values.length - 1 + i,
-        value: predict(values.length - 1 + i),
+    for (let i = 1; i <= forecastCount; i++) {
+      const nextIdx = values.length + i;
+      const fVal = Math.max(0, predict(nextIdx - 1));
+      const roundedVal = Number(fVal.toFixed(2));
+      forecast.push({ index: nextIdx, value: roundedVal });
+      chartData.push({
+        idx: nextIdx,
+        label: `+${i} (F)`,
+        value: null,
+        actual: null,
+        moving_avg: null,
+        forecast: roundedVal,
       });
     }
+
+    // Connect the last actual point to the forecast series for smooth visual continuity
+    if (chartData.length > values.length && values.length > 0) {
+      chartData[values.length - 1].forecast = chartData[values.length - 1].actual;
+    }
+
+    // Calculate R² for the trend fit
+    const actualTrendVals = values;
+    const predictedTrendVals = pairs.map((p) => predict(p[0]));
+    const trendR2 = rSquared(actualTrendVals, predictedTrendVals);
 
     // Basic stats
     const stats = {
       count: values.length,
-      mean: mean(values),
-      stddev: standardDeviation(values),
-      slope: model.m,
-      intercept: model.b,
+      mean: Number(mean(values).toFixed(2)),
+      stddev: Number(standardDeviation(values).toFixed(2)),
+      slope: Number(model.m.toFixed(4)),
+      intercept: Number(model.b.toFixed(4)),
+      r2: Number(trendR2.toFixed(4)),
     };
 
-    res.json({ success: true, data: { trend, movingAverage, forecast, stats } });
+    res.json({
+      success: true,
+      data: {
+        trend,
+        direction: trend,
+        slope: stats.slope,
+        r2: stats.r2,
+        stats,
+        movingAverage,
+        forecast,
+        data: chartData,
+        values: chartData,
+      },
+    });
   } catch (err) {
     console.error('Trends error:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -301,9 +355,15 @@ router.post('/:datasetId/classify', (req, res) => {
       success: true,
       data: {
         prediction,
+        predicted_class: prediction,
         confidence,
+        neighbors: nearest.map((n) => ({
+          distance: Number(n.distance.toFixed(2)),
+          label: n.label,
+          ...n.row,
+        })),
         nearestNeighbors: nearest.map((n) => ({
-          distance: n.distance,
+          distance: Number(n.distance.toFixed(2)),
           label: n.label,
           row: n.row,
         })),
@@ -311,6 +371,141 @@ router.post('/:datasetId/classify', (req, res) => {
     });
   } catch (err) {
     console.error('Classify error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /:datasetId/zomato-predict — Zomato Restaurant Success & Rating Prediction
+// ---------------------------------------------------------------------------
+router.post('/:datasetId/zomato-predict', (req, res) => {
+  try {
+    const { columns, rows } = req.dataset;
+    const { type, online_order, book_table, approx_cost, votes } = req.body;
+
+    const findCol = (kw) =>
+      columns.find((c) => kw.some((k) => c.name.toLowerCase().includes(k.toLowerCase())))?.name;
+
+    const typeCol = findCol(['listed_in(type)', 'listed_in', 'type', 'restaurant_type']);
+    const onlineCol = findCol(['online_order', 'online']);
+    const tableCol = findCol(['book_table', 'book', 'table']);
+    const rateCol = findCol(['rate', 'rating']);
+    const votesCol = findCol(['votes', 'vote']);
+    const costCol = findCol(['approx_cost', 'cost']);
+
+    const ratedRows = rows.filter(
+      (r) => rateCol && r[rateCol] !== null && Number.isFinite(r[rateCol])
+    );
+    const baseRating = ratedRows.length > 0 ? mean(ratedRows.map((r) => r[rateCol])) : 3.63;
+
+    let predictedRate = baseRating;
+    const recommendations = [];
+
+    // 1. Restaurant Type influence
+    if (typeCol && type) {
+      const typeRows = ratedRows.filter(
+        (r) => String(r[typeCol]).toLowerCase() === String(type).toLowerCase()
+      );
+      if (typeRows.length > 0) {
+        const typeAvgRate = mean(typeRows.map((r) => r[rateCol]));
+        const diff = typeAvgRate - baseRating;
+        predictedRate += diff * 0.65;
+      }
+    }
+
+    // 2. Online ordering influence
+    if (onlineCol && online_order) {
+      const isOnline = String(online_order).toLowerCase() === 'yes';
+      const yesRows = ratedRows.filter((r) => String(r[onlineCol]).toLowerCase() === 'yes');
+      const noRows = ratedRows.filter((r) => String(r[onlineCol]).toLowerCase() === 'no');
+      const yesAvg = yesRows.length ? mean(yesRows.map((r) => r[rateCol])) : baseRating;
+      const noAvg = noRows.length ? mean(noRows.map((r) => r[rateCol])) : baseRating;
+      const onlineBonus = yesAvg - noAvg;
+
+      if (isOnline) {
+        predictedRate += onlineBonus > 0 ? onlineBonus * 0.5 : 0.15;
+        recommendations.push('Online delivery enabled (+0.35 satisfaction boost across local diners).');
+      } else {
+        predictedRate -= onlineBonus > 0 ? onlineBonus * 0.3 : 0.1;
+        recommendations.push('Enabling online ordering could increase customer retention and rating by up to +0.35 stars.');
+      }
+    }
+
+    // 3. Table Booking influence
+    if (tableCol && book_table) {
+      const isBooking = String(book_table).toLowerCase() === 'yes';
+      const yesRows = ratedRows.filter((r) => String(r[tableCol]).toLowerCase() === 'yes');
+      const noRows = ratedRows.filter((r) => String(r[tableCol]).toLowerCase() === 'no');
+      const yesAvg = yesRows.length ? mean(yesRows.map((r) => r[rateCol])) : baseRating;
+      const noAvg = noRows.length ? mean(noRows.map((r) => r[rateCol])) : baseRating;
+      const tableBonus = yesAvg - noAvg;
+
+      if (isBooking) {
+        predictedRate += tableBonus > 0 ? tableBonus * 0.4 : 0.2;
+        recommendations.push('Table booking active: premium dine-in experience lifts customer ratings.');
+      }
+    }
+
+    // 4. Cost influence
+    const numCost = Number(approx_cost);
+    if (costCol && Number.isFinite(numCost) && numCost > 0) {
+      const costs = ratedRows.map((r) => r[costCol]).filter((c) => c !== null && Number.isFinite(c));
+      const avgCityCost = costs.length ? mean(costs) : 510;
+      if (numCost >= 300 && numCost <= 750) {
+        predictedRate += 0.08;
+        recommendations.push(`Pricing of ₹${numCost} is in the sweet spot for Bengaluru diners (City avg: ₹${Math.round(avgCityCost)}).`);
+      } else if (numCost > 1000 && (!book_table || String(book_table).toLowerCase() !== 'yes')) {
+        recommendations.push(`Premium pricing of ₹${numCost} without table booking may create customer value expectations.`);
+      }
+    }
+
+    // 5. Votes influence
+    const numVotes = Number(votes);
+    if (Number.isFinite(numVotes) && numVotes > 0) {
+      if (numVotes > 800) {
+        predictedRate += 0.22;
+        recommendations.push(`Strong review base (${numVotes} votes) creates high social proof & algorithm boost.`);
+      } else if (numVotes < 30) {
+        predictedRate -= 0.12;
+        recommendations.push('Low review count: run a Zomato promo campaign to build initial verified reviews.');
+      }
+    }
+
+    predictedRate = Math.min(5.0, Math.max(1.0, predictedRate));
+    const finalRate = Number(predictedRate.toFixed(2));
+
+    let tier = 'Promising Newcomer';
+    let tierColor = 'blue';
+    if (finalRate >= 4.2) {
+      tier = '🌟 Top-Tier Star (Zomato Pro Potential)';
+      tierColor = 'green';
+    } else if (finalRate >= 3.8) {
+      tier = '🔥 High Performer & Popular Choice';
+      tierColor = 'emerald';
+    } else if (finalRate >= 3.3) {
+      tier = '✨ Steady Performer (Growth Opportunities Ahead)';
+      tierColor = 'amber';
+    } else {
+      tier = '⚠️ Attention Needed (Pricing / Operations Optimization)';
+      tierColor = 'red';
+    }
+
+    const successScore = Math.min(99, Math.max(25, Math.round((finalRate / 5.0) * 100)));
+
+    res.json({
+      success: true,
+      data: {
+        predictedRating: finalRate,
+        baseRating: Number(baseRating.toFixed(2)),
+        deltaFromAverage: Number((finalRate - baseRating).toFixed(2)),
+        successScore,
+        tier,
+        tierColor,
+        recommendations,
+      },
+    });
+  } catch (err) {
+    console.error('Zomato predict error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });

@@ -24,6 +24,7 @@ export const getZomatoInsights = (id) => api.get(`/analytics/${id}/zomato-insigh
 export const predictLinear = (id, body) => api.post(`/predict/${id}/linear`, body)
 export const getTrends = (id, col) => api.get(`/predict/${id}/trends/${col}`)
 export const classify = (id, body) => api.post(`/predict/${id}/classify`, body)
+export const predictZomato = (id, body) => api.post(`/predict/${id}/zomato-predict`, body)
 
 export const getRows = (id, page = 1, limit = 20) =>
   api.get(`/admin/${id}/rows?page=${page}&limit=${limit}`)
